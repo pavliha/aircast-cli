@@ -330,10 +330,16 @@ func (b *Bridge) readWebSocket() {
 				if b.circuitState == "open" {
 					waitTime := time.Until(b.circuitOpenUntil)
 					if waitTime > 0 {
-						b.logger.Warnf("Circuit breaker is OPEN. Waiting %v before attempting reconnection...", waitTime.Round(time.Second))
-						time.Sleep(waitTime)
-						b.circuitState = "half-open"
-						b.logger.Info("Circuit breaker is now HALF-OPEN. Attempting reconnection...")
+						fmt.Printf("\n⏸️  Device not ready. Waiting %v before retry...\n\n", waitTime.Round(time.Second))
+
+						// Sleep with context cancellation support
+						select {
+						case <-b.ctx.Done():
+							return
+						case <-time.After(waitTime):
+							b.circuitState = "half-open"
+							fmt.Println("🔄 Retrying connection...")
+						}
 					}
 				}
 
@@ -436,8 +442,9 @@ func (b *Bridge) recordFailure() {
 	if b.failureCount >= b.failureThreshold && b.circuitState == "closed" {
 		b.circuitState = "open"
 		b.circuitOpenUntil = time.Now().Add(b.circuitOpenPeriod)
-		b.logger.Warnf("Circuit breaker OPENED after %d failures. Will retry after %v",
-			b.failureCount, b.circuitOpenPeriod)
+		fmt.Printf("\n⚠️  Device MAVLink proxy is not running.\n")
+		fmt.Printf("   Please start the aircast-agent on your device.\n")
+		fmt.Printf("   Retrying in %v...\n\n", b.circuitOpenPeriod)
 	}
 }
 
@@ -447,7 +454,7 @@ func (b *Bridge) resetCircuit() {
 	defer b.wsMutex.Unlock()
 
 	if b.failureCount > 0 {
-		b.logger.Info("Connection stable. Circuit breaker CLOSED.")
+		fmt.Println("\n✅ Connected! MAVLink data is flowing.\n")
 	}
 	b.failureCount = 0
 	b.circuitState = "closed"

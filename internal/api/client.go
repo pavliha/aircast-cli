@@ -49,6 +49,15 @@ type DeviceStatus struct {
 	ConnectedAt *int64 `json:"connected_at,omitempty"`
 }
 
+// DeviceStatusResponse represents the status API response
+type DeviceStatusResponse struct {
+	Devices []DeviceStatus `json:"devices"`
+	Summary struct {
+		Total  int `json:"total"`
+		Online int `json:"online"`
+	} `json:"summary"`
+}
+
 // NewClient creates a new API client
 func NewClient(baseURL, token string) *Client {
 	return &Client{
@@ -102,6 +111,7 @@ func (c *Client) GetDevices(ctx context.Context) ([]Device, error) {
 	statusURL := fmt.Sprintf("%s/v1/user/devices/status", c.baseURL)
 	statusReq, err := http.NewRequestWithContext(ctx, "GET", statusURL, nil)
 	if err != nil {
+		fmt.Printf("Debug: Failed to create status request: %v\n", err)
 		return devices, nil // Return devices without status if status fetch fails
 	}
 
@@ -113,25 +123,38 @@ func (c *Client) GetDevices(ctx context.Context) ([]Device, error) {
 
 	statusResp, err := c.httpClient.Do(statusReq)
 	if err != nil {
+		fmt.Printf("Debug: Failed to fetch status: %v\n", err)
 		return devices, nil // Return devices without status
 	}
 	defer statusResp.Body.Close()
 
+	fmt.Printf("Debug: Status response code: %d\n", statusResp.StatusCode)
+
 	if statusResp.StatusCode == http.StatusOK {
-		var statuses []DeviceStatus
-		if err := json.NewDecoder(statusResp.Body).Decode(&statuses); err == nil {
+		body, _ := io.ReadAll(statusResp.Body)
+		fmt.Printf("Debug: Status response body: %s\n", string(body))
+
+		var statusResponse DeviceStatusResponse
+		if err := json.Unmarshal(body, &statusResponse); err == nil {
+			fmt.Printf("Debug: Parsed %d statuses (total: %d, online: %d)\n",
+				len(statusResponse.Devices), statusResponse.Summary.Total, statusResponse.Summary.Online)
+
 			// Create a map for quick lookup
 			statusMap := make(map[string]bool)
-			for _, s := range statuses {
+			for _, s := range statusResponse.Devices {
+				fmt.Printf("Debug: Device %s is online: %v\n", s.DeviceID, s.IsOnline)
 				statusMap[s.DeviceID] = s.IsOnline
 			}
 
 			// Update devices with status
 			for i := range devices {
 				if online, ok := statusMap[devices[i].ID]; ok {
+					fmt.Printf("Debug: Setting device %s online status to: %v\n", devices[i].ID, online)
 					devices[i].IsOnline = online
 				}
 			}
+		} else {
+			fmt.Printf("Debug: Failed to parse status: %v\n", err)
 		}
 	}
 

@@ -5,8 +5,100 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/pavliha/aircast/aircast-cli/internal/api"
 )
+
+type devicePickerModel struct {
+	devices  []api.Device
+	cursor   int
+	selected int
+	done     bool
+}
+
+func (m devicePickerModel) Init() tea.Cmd {
+	return nil
+}
+
+func (m devicePickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "q", "esc":
+			return m, tea.Quit
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if m.cursor < len(m.devices)-1 {
+				m.cursor++
+			}
+		case "enter", " ":
+			m.selected = m.cursor
+			m.done = true
+			return m, tea.Quit
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			// Allow number selection too
+			num := int(msg.String()[0] - '0')
+			if num > 0 && num <= len(m.devices) {
+				m.selected = num - 1
+				m.done = true
+				return m, tea.Quit
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m devicePickerModel) View() string {
+	if m.done {
+		return ""
+	}
+
+	// Styles
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("39")).
+		Padding(0, 1)
+
+	selectedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("10")).
+		Bold(true).
+		PaddingLeft(2)
+
+	normalStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("7")).
+		PaddingLeft(2)
+
+	var s strings.Builder
+	s.WriteString("\n")
+	s.WriteString(titleStyle.Render("Select a Device"))
+	s.WriteString("\n\n")
+
+	for i, device := range m.devices {
+		cursor := " "
+		if m.cursor == i {
+			cursor = "❯"
+		}
+
+		style := normalStyle
+		if m.cursor == i {
+			style = selectedStyle
+		}
+
+		deviceLine := fmt.Sprintf("%s [%d] %s", cursor, i+1, formatDevice(device))
+		s.WriteString(style.Render(deviceLine))
+		s.WriteString("\n")
+	}
+
+	s.WriteString("\n")
+	s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("  ↑/↓: Navigate • Enter: Select • 1-9: Quick select • q: Quit"))
+	s.WriteString("\n\n")
+
+	return s.String()
+}
 
 // PickDevice presents an interactive menu to select a device
 func PickDevice(devices []api.Device) (*api.Device, error) {
@@ -20,20 +112,45 @@ func PickDevice(devices []api.Device) (*api.Device, error) {
 		return &devices[0], nil
 	}
 
-	// Display header
+	// Run interactive picker
+	m := devicePickerModel{
+		devices:  devices,
+		cursor:   0,
+		selected: -1,
+		done:     false,
+	}
+
+	p := tea.NewProgram(m)
+	finalModel, err := p.Run()
+	if err != nil {
+		// Fallback to old style if bubbletea fails
+		return fallbackPicker(devices)
+	}
+
+	result := finalModel.(devicePickerModel)
+	if !result.done || result.selected < 0 {
+		return nil, fmt.Errorf("no device selected")
+	}
+
+	selectedDevice := &devices[result.selected]
+	fmt.Printf("\n✓ Selected: %s\n\n", selectedDevice.Name)
+
+	return selectedDevice, nil
+}
+
+// fallbackPicker is the old number-based picker as fallback
+func fallbackPicker(devices []api.Device) (*api.Device, error) {
 	fmt.Println("\n╔═══════════════════════════════════════════════════════════════╗")
 	fmt.Println("║                    Select a Device                            ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	// Display devices
 	for i, device := range devices {
 		fmt.Printf("[%d] %s\n", i+1, formatDevice(device))
 	}
 
 	fmt.Println()
 
-	// Get user selection
 	var selection int
 	for {
 		fmt.Printf("Select device (1-%d): ", len(devices))

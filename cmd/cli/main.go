@@ -209,19 +209,20 @@ func main() {
 	}
 
 	fmt.Println("╔═══════════════════════════════════════════════════════════════╗")
-	fmt.Println("║          MAVLink Bridge Running                               ║")
+	fmt.Println("║          🚀 MAVLink Bridge Running                           ║")
 	fmt.Println("╚═══════════════════════════════════════════════════════════════╝")
 	fmt.Println()
-	fmt.Printf("  Device ID:  %s\n", selectedDeviceID)
-	fmt.Printf("  TCP Port:   %s\n", *tcpListen)
+	fmt.Printf("  📡 Device:     %s\n", selectedDeviceID)
+	fmt.Printf("  🔌 TCP Port:   %s\n", *tcpListen)
 	if *udpListen != "" {
-		fmt.Printf("  UDP Port:   %s\n", *udpListen)
+		fmt.Printf("  🔌 UDP Port:   %s\n", *udpListen)
 	}
 	fmt.Println()
-	fmt.Println("Connect your ground control station to:")
-	fmt.Printf("  tcp://%s\n", *tcpListen)
+	fmt.Println("  🛩️  Connect your ground control station to:")
+	fmt.Printf("     tcp://%s\n", *tcpListen)
 	fmt.Println()
-	fmt.Println("Press Ctrl+C to stop...")
+	fmt.Println("  💡 Waiting for device MAVLink proxy to start...")
+	fmt.Println("  ⏹️  Press Ctrl+C to stop")
 	fmt.Println()
 
 	logger.WithFields(log.Fields{
