@@ -1,0 +1,21 @@
+# Binaries
+aircast-cli
+aircast-cli-*
+*.exe
+
+# Go
+*.test
+*.out
+vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.env
