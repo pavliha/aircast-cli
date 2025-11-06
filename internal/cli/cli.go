@@ -11,6 +11,10 @@ import (
 
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Config holds the bridge configuration
@@ -317,7 +321,21 @@ func (b *Bridge) readWebSocket() {
 		default:
 		}
 
-		msgType, data, err := b.wsConn.ReadMessage()
+		// Check if WebSocket is connected before attempting to read
+		b.wsMutex.Lock()
+		conn := b.wsConn
+		b.wsMutex.Unlock()
+
+		if conn == nil {
+			// WebSocket not connected, try to reconnect
+			if err := b.reconnectWebSocket(); err != nil {
+				b.logger.WithError(err).Error("Failed to reconnect WebSocket")
+				time.Sleep(2 * time.Second)
+			}
+			continue
+		}
+
+		msgType, data, err := conn.ReadMessage()
 		if err != nil {
 			select {
 			case <-b.ctx.Done():
@@ -354,21 +372,65 @@ func (b *Bridge) readWebSocket() {
 			}
 		}
 
+		// Step 9: Trace CLI WebSocket read
+		tracer := otel.Tracer("aircast-cli/bridge")
+		ctx, span := tracer.Start(context.Background(), "mavlink.cli.websocket_read",
+			trace.WithAttributes(
+				attribute.String("direction", "api_to_cli"),
+				attribute.Int("mavlink.bytes", len(data)),
+				attribute.Int("ws.message_type", msgType),
+			),
+		)
+
+		b.logger.WithFields(log.Fields{
+			"msg_type": msgType,
+			"bytes":    len(data),
+			"trace_id": span.SpanContext().TraceID().String(),
+		}).Debug("CLI received message from WebSocket")
+
 		// Successful data received - reset circuit breaker
 		b.resetCircuit()
 
 		// Only process binary messages
 		if msgType != websocket.BinaryMessage {
 			b.logger.Debug("Ignoring non-binary WebSocket message")
+			span.SetStatus(codes.Error, "non-binary message")
+			span.End()
 			continue
 		}
 
+		span.SetStatus(codes.Ok, "received MAVLink data from API")
+		span.End()
+		_ = ctx
+
+		// Step 10: Trace CLI TCP write
 		// Forward to all TCP clients
 		b.tcpMutex.RLock()
 		for clientAddr, conn := range b.tcpClients {
-			if _, err := conn.Write(data); err != nil {
+			_, tcpSpan := tracer.Start(ctx, "mavlink.cli.tcp_write",
+				trace.WithAttributes(
+					attribute.String("direction", "cli_to_mavproxy"),
+					attribute.Int("mavlink.bytes", len(data)),
+					attribute.String("client.addr", clientAddr),
+					attribute.String("transport", "tcp"),
+				),
+			)
+
+			n, err := conn.Write(data)
+			if err != nil {
 				b.logger.WithError(err).WithField("client", clientAddr).Error("Failed to write to TCP client")
+				tcpSpan.RecordError(err)
+				tcpSpan.SetStatus(codes.Error, "tcp write failed")
+			} else {
+				b.logger.WithFields(log.Fields{
+					"client":   clientAddr,
+					"bytes":    n,
+					"trace_id": tcpSpan.SpanContext().TraceID().String(),
+				}).Debug("CLI wrote data to TCP client")
+				tcpSpan.SetAttributes(attribute.Int("bytes_written", n))
+				tcpSpan.SetStatus(codes.Ok, "data sent to MAVProxy")
 			}
+			tcpSpan.End()
 		}
 		b.tcpMutex.RUnlock()
 
@@ -376,9 +438,30 @@ func (b *Bridge) readWebSocket() {
 		if b.udpConn != nil {
 			b.udpMutex.RLock()
 			for clientAddr, addr := range b.udpClients {
-				if _, err := b.udpConn.WriteToUDP(data, addr); err != nil {
+				_, udpSpan := tracer.Start(ctx, "mavlink.cli.udp_write",
+					trace.WithAttributes(
+						attribute.String("direction", "cli_to_gcs"),
+						attribute.Int("mavlink.bytes", len(data)),
+						attribute.String("client.addr", clientAddr),
+						attribute.String("transport", "udp"),
+					),
+				)
+
+				n, err := b.udpConn.WriteToUDP(data, addr)
+				if err != nil {
 					b.logger.WithError(err).WithField("client", clientAddr).Error("Failed to write to UDP client")
+					udpSpan.RecordError(err)
+					udpSpan.SetStatus(codes.Error, "udp write failed")
+				} else {
+					b.logger.WithFields(log.Fields{
+						"client":   clientAddr,
+						"bytes":    n,
+						"trace_id": udpSpan.SpanContext().TraceID().String(),
+					}).Debug("CLI wrote data to UDP client")
+					udpSpan.SetAttributes(attribute.Int("bytes_written", n))
+					udpSpan.SetStatus(codes.Ok, "data sent to GCS")
 				}
+				udpSpan.End()
 			}
 			b.udpMutex.RUnlock()
 		}

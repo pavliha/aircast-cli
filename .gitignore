@@ -19,3 +19,6 @@ vendor/
 .DS_Store
 Thumbs.db
 .env
+
+mav.tlog
+mav.tlog.raw

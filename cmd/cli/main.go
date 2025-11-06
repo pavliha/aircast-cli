@@ -31,7 +31,7 @@ func main() {
 	var (
 		deviceID    = flag.String("device", "", "Device ID to connect to (optional - will prompt to select)")
 		apiURL      = flag.String("api", getEnv("AIRCAST_API_URL", "https://api.aircast.one"), "API base URL")
-		tcpListen   = flag.String("tcp", getEnv("AIRCAST_TCP_LISTEN", "127.0.0.1:14550"), "TCP listen address for MAVLink clients")
+		tcpListen   = flag.String("tcp", getEnv("AIRCAST_TCP_LISTEN", "127.0.0.1:5169"), "TCP listen address for MAVLink clients")
 		udpListen   = flag.String("udp", getEnv("AIRCAST_UDP_LISTEN", ""), "UDP listen address for MAVLink clients (optional)")
 		doLogin     = flag.Bool("login", false, "Force re-authentication (clear stored token)")
 		doLogout    = flag.Bool("logout", false, "Clear stored authentication token")
@@ -63,6 +63,12 @@ func main() {
 	tokenStore, err := auth.NewTokenStore()
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to initialize token store")
+	}
+
+	// Initialize config store
+	configStore, err := auth.NewConfigStore()
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to initialize config store")
 	}
 
 	// Handle logout
@@ -128,10 +134,16 @@ func main() {
 		}
 	}
 
-	// Get device ID (from flag or interactive selection)
+	// Get device ID (from flag, saved config, or interactive selection)
 	selectedDeviceID := *deviceID
 
 	if selectedDeviceID == "" {
+		// Try to use last saved device
+		lastDeviceID, err := configStore.GetLastDevice()
+		if err != nil {
+			logger.WithError(err).Warn("Failed to load last device from config")
+		}
+
 		// Fetch devices from API
 		apiClient := api.NewClient(*apiURL, accessToken)
 		devices, err := apiClient.GetDevices(ctx)
@@ -177,13 +189,38 @@ func main() {
 			}
 		}
 
-		// Let user pick a device
-		selectedDevice, err := ui.PickDevice(devices)
-		if err != nil {
-			logger.WithError(err).Fatal("Failed to select device")
+		// Try to auto-select last device if available and valid
+		if lastDeviceID != "" {
+			// Check if the last device is still in the list and online
+			for _, device := range devices {
+				if device.ID == lastDeviceID {
+					if device.IsOnline {
+						selectedDeviceID = lastDeviceID
+						fmt.Printf("✓ Auto-connecting to last device: %s\n\n", device.Name)
+						logger.WithField("device_id", lastDeviceID).Debug("Auto-selected last device")
+					} else {
+						fmt.Printf("⚠ Last device (%s) is offline, please select a device\n\n", device.Name)
+						logger.WithField("device_id", lastDeviceID).Warn("Last device is offline")
+					}
+					break
+				}
+			}
 		}
 
-		selectedDeviceID = selectedDevice.ID
+		// If no auto-selection, let user pick a device
+		if selectedDeviceID == "" {
+			selectedDevice, err := ui.PickDevice(devices)
+			if err != nil {
+				logger.WithError(err).Fatal("Failed to select device")
+			}
+
+			selectedDeviceID = selectedDevice.ID
+		}
+
+		// Save the selected device for next time
+		if err := configStore.SaveLastDevice(selectedDeviceID); err != nil {
+			logger.WithError(err).Warn("Failed to save last device to config")
+		}
 	}
 
 	// Build WebSocket URL
@@ -220,6 +257,9 @@ func main() {
 	fmt.Println()
 	fmt.Println("  🛩️  Connect your ground control station to:")
 	fmt.Printf("     tcp://%s\n", *tcpListen)
+	if *udpListen != "" {
+		fmt.Printf("     udp://%s\n", *udpListen)
+	}
 	fmt.Println()
 	fmt.Println("  💡 Waiting for device MAVLink proxy to start...")
 	fmt.Println("  ⏹️  Press Ctrl+C to stop")
